@@ -56,12 +56,25 @@ class RTMPCreator {
                 _ = try await connection.connect(_streamUrl)
                 _ = try await stream.publish(_streamName)
                 isStreaming = true
+                await applyBitrateStrategy()
                 resolve(nil)
             } catch {
                 NSLog("RTMPCreator: publish failed: %@", error.localizedDescription)
                 reject("STREAM_ERROR", "Failed to start stream: \(error.localizedDescription)", error)
             }
         }
+    }
+
+    /// Installs HaishinKit's built-in adaptive bitrate strategy. The current
+    /// `videoSettings.bitrate` is the ceiling; HaishinKit's NetworkMonitor
+    /// (driven by RTMPConnection) adapts downward under congestion and climbs
+    /// back toward the ceiling when bandwidth recovers. Re-installed whenever
+    /// the ceiling changes so the maximum tracks the requested video settings.
+    private static func applyBitrateStrategy() async {
+        let strategy = HKStreamVideoAdaptiveBitRateStrategy(
+            mamimumVideoBitrate: videoSettings.bitrate
+        )
+        await stream.setBitrateStorategy(strategy)
     }
 
     public static func setVideoSettings(_ newVideoSettings: VideoSettingsType) {
@@ -79,6 +92,12 @@ class RTMPCreator {
             await stream.setAudioSettings(AudioCodecSettings(
                 bitRate: videoSettings.audioBitrate
             ))
+
+            // Keep the adaptive-bitrate ceiling in sync with the new settings
+            // while a stream is active.
+            if isStreaming {
+                await applyBitrateStrategy()
+            }
         }
     }
 

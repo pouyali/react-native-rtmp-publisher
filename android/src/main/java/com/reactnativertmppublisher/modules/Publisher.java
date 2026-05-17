@@ -35,11 +35,13 @@ public class Publisher {
 
   ConnectionChecker _connectionChecker = new ConnectionChecker();
   BluetoothDeviceConnector _bluetoothDeviceConnector;
+  private final AdaptiveBitrate _adaptiveBitrate;
 
   public Publisher(ThemedReactContext reactContext, SurfaceView surfaceView) {
     _reactContext = reactContext;
     _surfaceView = surfaceView;
     _rtmpCamera = new RtmpCamera1(surfaceView, _connectionChecker);
+    _adaptiveBitrate = new AdaptiveBitrate(_rtmpCamera);
     _bluetoothDeviceConnector = new BluetoothDeviceConnector(reactContext);
 
     _bluetoothDeviceConnector.addListener(createBluetoothDeviceListener());
@@ -194,6 +196,10 @@ public class Publisher {
 
       String url = _streamUrl + "/" + _streamName;
       _rtmpCamera.startStream(url);
+
+      // Always-on adaptive bitrate: _videoBitrate is the ceiling; the loop
+      // adapts downward under congestion and climbs back when stable.
+      _adaptiveBitrate.start(_videoBitrate);
     } catch (Exception e) {
       e.printStackTrace();
     }
@@ -205,10 +211,15 @@ public class Publisher {
     _videoBitrate = bitrate;
     _audioBitrate = audioBitrate;
     _fps = fps;
+
+    // Keep the adaptive-bitrate ceiling in sync with the requested settings.
+    _adaptiveBitrate.setCeiling(bitrate);
   }
 
   public void stopStream() {
     try {
+      _adaptiveBitrate.stop();
+
       boolean isStreaming = _rtmpCamera.isStreaming();
 
       if (!isStreaming) {
@@ -277,6 +288,7 @@ public class Publisher {
   public boolean handlePause() {
     boolean wasStreaming = false;
     try {
+      _adaptiveBitrate.stop();
       wasStreaming = _rtmpCamera.isStreaming();
       if (wasStreaming) {
         _rtmpCamera.stopStream();
@@ -313,6 +325,7 @@ public class Publisher {
    */
   public void handleDestroy() {
     try {
+      _adaptiveBitrate.stop();
       if (_rtmpCamera.isStreaming()) {
         _rtmpCamera.stopStream();
       }

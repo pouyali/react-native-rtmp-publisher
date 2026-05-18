@@ -243,7 +243,9 @@ class RTMPView: UIView {
         let bytesPerSecond = await RTMPCreator.stream.info.currentBytesPerSecond
         let bitsPerSecond = bytesPerSecond * 8
         await MainActor.run {
-          self.onNewBitrateReceived?(["bitrate": bitsPerSecond])
+          // JS reads e.nativeEvent.data — the key MUST be "data" to match
+          // the wrapper and the other events (e.g. onStreamStateChanged).
+          self.onNewBitrateReceived?(["data": bitsPerSecond])
         }
         try? await Task.sleep(nanoseconds: 1_500_000_000)
       }

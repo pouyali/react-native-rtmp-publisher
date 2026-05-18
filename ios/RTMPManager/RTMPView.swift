@@ -242,10 +242,16 @@ class RTMPView: UIView {
         guard let self = self else { break }
         let bytesPerSecond = await RTMPCreator.stream.info.currentBytesPerSecond
         let bitsPerSecond = bytesPerSecond * 8
+        // The encoder's actual configured video bitrate — what the native
+        // adaptive-bitrate strategy has currently settled on.
+        let encoderBitrate = await RTMPCreator.stream.videoSettings.bitRate
         await MainActor.run {
           // JS reads e.nativeEvent.data — the key MUST be "data" to match
           // the wrapper and the other events (e.g. onStreamStateChanged).
-          self.onNewBitrateReceived?(["data": bitsPerSecond])
+          self.onNewBitrateReceived?([
+            "data": bitsPerSecond,
+            "encoderBitrate": encoderBitrate,
+          ])
         }
         try? await Task.sleep(nanoseconds: 1_500_000_000)
       }

@@ -18,6 +18,7 @@ class RTMPView: UIView {
   private var hasAttachedStream = false
   private var connectionStatusTask: Task<Void, Never>?
   private var streamStatusTask: Task<Void, Never>?
+  private var bitrateReportTask: Task<Void, Never>?
   private var hasCleanedUp = false
 
   @objc var onDisconnect: RCTDirectEventBlock?
@@ -108,6 +109,8 @@ class RTMPView: UIView {
     connectionStatusTask = nil
     streamStatusTask?.cancel()
     streamStatusTask = nil
+    bitrateReportTask?.cancel()
+    bitrateReportTask = nil
 
     // Capture view reference before potential deallocation
     let view = hkView!
@@ -229,6 +232,24 @@ class RTMPView: UIView {
     }
   }
 
+  /// Polls the RTMP stream's outbound throughput and emits it as the
+  /// onNewBitrateReceived event (~1.5s cadence). iOS-only — Android already
+  /// emits this event via ConnectionChecker.
+  private func startBitrateReporting() {
+    bitrateReportTask?.cancel()
+    bitrateReportTask = Task { [weak self] in
+      while !Task.isCancelled {
+        guard let self = self else { break }
+        let bytesPerSecond = await RTMPCreator.stream.info.currentBytesPerSecond
+        let bitsPerSecond = bytesPerSecond * 8
+        await MainActor.run {
+          self.onNewBitrateReceived?(["bitrate": bitsPerSecond])
+        }
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+      }
+    }
+  }
+
   private func handleConnectionStatus(_ status: RTMPStatus) {
     switch status.code {
     case RTMPConnection.Code.connectSuccess.rawValue:
@@ -253,6 +274,7 @@ class RTMPView: UIView {
     case RTMPStream.Code.publishStart.rawValue:
       onConnectionStarted?(nil)
       changeStreamState(status: "CONNECTED")
+      startBitrateReporting()
 
     default:
       break

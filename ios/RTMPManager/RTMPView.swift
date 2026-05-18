@@ -70,9 +70,7 @@ class RTMPView: UIView {
       let fps = videoSettings["fps"] as? Int ?? 30
 
       // No-op when nothing changed. The React Native prop setter fires on every
-      // bridge write, and applying VideoCodecSettings reconfigures the live
-      // H.264 encoder. A redundant apply mid-publish makes the RTMP server reset
-      // the connection, so only re-apply on a genuine change.
+      // bridge write; skipping an identical apply avoids needless work.
       let current = RTMPCreator.videoSettings
       if current.width == width,
          current.height == height,
@@ -82,12 +80,23 @@ class RTMPView: UIView {
           return
       }
 
+      // The capture-session preset drives the camera preview only — safe to
+      // update whether or not a stream is active.
       let preset = selectCapturePreset(for: width, height: height)
       Task {
         await RTMPCreator.mixer.setSessionPreset(preset)
       }
 
-      RTMPCreator.setVideoSettings(VideoSettingsType(width: width, height: height, bitrate: bitrate, audioBitrate: audioBitrate, fps: fps))
+      let newSettings = VideoSettingsType(width: width, height: height, bitrate: bitrate, audioBitrate: audioBitrate, fps: fps)
+      if RTMPCreator.isStreaming {
+          // Streaming: apply live (store + encoder + adaptive-bitrate ceiling).
+          RTMPCreator.setVideoSettings(newSettings)
+      } else {
+          // Idle: store only. The shared RTMPStream must not be mutated between
+          // sessions — startPublish applies these stored settings at publish
+          // time. Mutating the idle stream corrupts the next publish.
+          RTMPCreator.storeVideoSettings(newSettings)
+      }
   }
 
   @objc var videoOrientation: NSString = "portrait" {

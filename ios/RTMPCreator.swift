@@ -53,6 +53,11 @@ class RTMPCreator {
     public static func startPublish(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock){
         Task {
             do {
+                // Configure the encoder from the stored settings BEFORE
+                // publishing. The stream is never mutated while idle, so this
+                // is the single point where each session's encoder state is
+                // established — every publish starts deterministic.
+                await applyVideoSettingsToStream()
                 _ = try await connection.connect(_streamUrl)
                 _ = try await stream.publish(_streamName)
                 isStreaming = true
@@ -77,27 +82,44 @@ class RTMPCreator {
         await stream.setBitrateStorategy(strategy)
     }
 
-    public static func setVideoSettings(_ newVideoSettings: VideoSettingsType) {
+    /// Records the desired video settings without touching the stream. Used by
+    /// the idle path (a quality change made while not streaming). The encoder
+    /// is configured later, from these stored values, inside `startPublish`.
+    public static func storeVideoSettings(_ newVideoSettings: VideoSettingsType) {
         videoSettings = newVideoSettings
+    }
+
+    /// Applies the currently stored `videoSettings` to the stream's encoder.
+    /// Called by `startPublish` (always, before publishing) and by the
+    /// live-streaming path when settings change mid-stream.
+    private static func applyVideoSettingsToStream() async {
+        await mixer.setFrameRate(Float64(videoSettings.fps))
+
+        await stream.setVideoSettings(VideoCodecSettings(
+            videoSize: CGSize(width: videoSettings.width, height: videoSettings.height),
+            bitRate: videoSettings.bitrate,
+            profileLevel: kVTProfileLevel_H264_High_AutoLevel as String,
+            scalingMode: .cropSourceToCleanAperture
+        ))
+
+        await stream.setAudioSettings(AudioCodecSettings(
+            bitRate: videoSettings.audioBitrate
+        ))
+    }
+
+    /// Stores new video settings and, if a stream is currently active, applies
+    /// them to the live encoder and re-syncs the adaptive-bitrate ceiling.
+    /// While idle this only stores — the stream must not be mutated between
+    /// sessions, or the next publish is rejected by the RTMP server.
+    public static func setVideoSettings(_ newVideoSettings: VideoSettingsType) {
+        storeVideoSettings(newVideoSettings)
+        guard isStreaming else { return }
         Task {
-            await mixer.setFrameRate(Float64(videoSettings.fps))
-
-            await stream.setVideoSettings(VideoCodecSettings(
-                videoSize: CGSize(width: videoSettings.width, height: videoSettings.height),
-                bitRate: videoSettings.bitrate,
-                profileLevel: kVTProfileLevel_H264_High_AutoLevel as String,
-                scalingMode: .cropSourceToCleanAperture
-            ))
-
-            await stream.setAudioSettings(AudioCodecSettings(
-                bitRate: videoSettings.audioBitrate
-            ))
-
-            // Keep the adaptive-bitrate ceiling in sync with the new settings
-            // while a stream is active.
-            if isStreaming {
-                await applyBitrateStrategy()
-            }
+            // Re-check after the async hop — the stream may have stopped
+            // between the guard above and this Task body executing.
+            guard isStreaming else { return }
+            await applyVideoSettingsToStream()
+            await applyBitrateStrategy()
         }
     }
 

@@ -69,6 +69,19 @@ class RTMPView: UIView {
       let audioBitrate = videoSettings["audioBitrate"] as? Int ?? (128 * 1000)
       let fps = videoSettings["fps"] as? Int ?? 30
 
+      // No-op when nothing changed. The React Native prop setter fires on every
+      // bridge write, and applying VideoCodecSettings reconfigures the live
+      // H.264 encoder. A redundant apply mid-publish makes the RTMP server reset
+      // the connection, so only re-apply on a genuine change.
+      let current = RTMPCreator.videoSettings
+      if current.width == width,
+         current.height == height,
+         current.bitrate == bitrate,
+         current.audioBitrate == audioBitrate,
+         current.fps == fps {
+          return
+      }
+
       let preset = selectCapturePreset(for: width, height: height)
       Task {
         await RTMPCreator.mixer.setSessionPreset(preset)

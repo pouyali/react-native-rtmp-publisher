@@ -56,7 +56,9 @@ class RTMPCreator {
                 _ = try await connection.connect(_streamUrl)
                 _ = try await stream.publish(_streamName)
                 isStreaming = true
-                await applyBitrateStrategy()
+                // DIAGNOSTIC: HaishinKit ABR strategy install disabled to test
+                // whether it is the cause of the intermittent reconnect loop.
+                // await applyBitrateStrategy()
                 resolve(nil)
             } catch {
                 NSLog("RTMPCreator: publish failed: %@", error.localizedDescription)
@@ -93,11 +95,10 @@ class RTMPCreator {
                 bitRate: videoSettings.audioBitrate
             ))
 
-            // Keep the adaptive-bitrate ceiling in sync with the new settings
-            // while a stream is active.
-            if isStreaming {
-                await applyBitrateStrategy()
-            }
+            // DIAGNOSTIC: ABR strategy re-install disabled (see startPublish).
+            // if isStreaming {
+            //     await applyBitrateStrategy()
+            // }
         }
     }
 

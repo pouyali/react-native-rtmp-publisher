@@ -107,18 +107,23 @@ class RTMPView: UIView {
 
   @objc var videoOrientation: NSString = "portrait" {
     didSet {
+      NSLog("📡 [RTMPView] videoOrientation didSet: \"%@\" -> \"%@\" hasAttachedStream=%@",
+            oldValue as String, videoOrientation as String, hasAttachedStream ? "true" : "false")
       guard hasAttachedStream else { return }
       applyVideoOrientation()
     }
   }
 
   private func applyVideoOrientation() {
+    NSLog("📡 [RTMPView] applyVideoOrientation called with \"%@\"", self.videoOrientation as String)
     Task {
       switch self.videoOrientation {
       case "landscape":
         await RTMPCreator.mixer.setVideoOrientation(AVCaptureVideoOrientation.landscapeRight)
+        NSLog("📡 [RTMPView] setVideoOrientation(.landscapeRight) completed")
       default:
         await RTMPCreator.mixer.setVideoOrientation(AVCaptureVideoOrientation.portrait)
+        NSLog("📡 [RTMPView] setVideoOrientation(.portrait) completed")
       }
     }
   }
@@ -337,6 +342,9 @@ class RTMPView: UIView {
     let preset = selectCapturePreset(for: width, height: height)
     let orientation = videoOrientation
 
+    NSLog("📡 [RTMPView] performInitialSetup START orientation=\"%@\" width=%d height=%d preset=%@",
+          orientation as String, width, height, preset.rawValue)
+
     Task {
       // Configure audio session and attach audio
       configureAudioSession()
@@ -349,20 +357,29 @@ class RTMPView: UIView {
       let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
       try? await RTMPCreator.mixer.attachVideo(camera)
       await MainActor.run { RTMPCreator.isVideoAttached = true }
+      NSLog("📡 [RTMPView] performInitialSetup: attachVideo done")
 
       // Apply capture settings
       await RTMPCreator.mixer.setSessionPreset(preset)
       await RTMPCreator.mixer.setFrameRate(Float64(fps))
+      NSLog("📡 [RTMPView] performInitialSetup: setSessionPreset(%@) setFrameRate(%d) done", preset.rawValue, fps)
 
       // Apply video orientation
       switch orientation {
       case "landscape":
         await RTMPCreator.mixer.setVideoOrientation(.landscapeRight)
+        NSLog("📡 [RTMPView] performInitialSetup: setVideoOrientation(.landscapeRight) done")
       default:
         await RTMPCreator.mixer.setVideoOrientation(.portrait)
+        NSLog("📡 [RTMPView] performInitialSetup: setVideoOrientation(.portrait) done — bug? orientation was \"%@\"", orientation as String)
       }
 
+      // Readback to verify orientation actually applied to the mixer
+      let appliedOrientation = await RTMPCreator.mixer.videoOrientation
+      NSLog("📡 [RTMPView] performInitialSetup: mixer.videoOrientation readback = %d (1=portrait,2=portraitUpsideDown,3=landscapeRight,4=landscapeLeft)", appliedOrientation.rawValue)
+
       // Apply encoding settings
+      NSLog("📡 [RTMPView] performInitialSetup: setting encoder videoSize=%dx%d bitrate=%d", width, height, bitrate)
       await RTMPCreator.stream.setVideoSettings(VideoCodecSettings(
         videoSize: CGSize(width: width, height: height),
         bitRate: bitrate,

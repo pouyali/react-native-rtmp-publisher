@@ -53,6 +53,14 @@ class RTMPCreator {
     public static func startPublish(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock){
         Task {
             do {
+                // Re-apply the encoder settings the app has configured before
+                // every publish. HaishinKit's `RTMPStream.close()` resets the
+                // outgoing.videoSettings back to its hardcoded default — so
+                // after a disconnect/republish cycle, without this re-apply
+                // the encoder ends up at the wrong bitrate (typically higher
+                // than the app requested, which is exactly the wrong
+                // direction on a bad network).
+                await applyVideoSettingsToStream()
                 _ = try await connection.connect(_streamUrl)
                 _ = try await stream.publish(_streamName)
                 isStreaming = true
@@ -63,6 +71,25 @@ class RTMPCreator {
                 reject("STREAM_ERROR", "Failed to start stream: \(error.localizedDescription)", error)
             }
         }
+    }
+
+    /// Applies the currently-stored `videoSettings` to the live encoder.
+    /// Shared between `startPublish` (every publish lifecycle, so the encoder
+    /// survives close+republish with the right config) and `setVideoSettings`
+    /// (when the app changes settings mid-stream or at view-attach time).
+    private static func applyVideoSettingsToStream() async {
+        await mixer.setFrameRate(Float64(videoSettings.fps))
+
+        await stream.setVideoSettings(VideoCodecSettings(
+            videoSize: CGSize(width: videoSettings.width, height: videoSettings.height),
+            bitRate: videoSettings.bitrate,
+            profileLevel: kVTProfileLevel_H264_High_AutoLevel as String,
+            scalingMode: .cropSourceToCleanAperture
+        ))
+
+        await stream.setAudioSettings(AudioCodecSettings(
+            bitRate: videoSettings.audioBitrate
+        ))
     }
 
     /// Installs HaishinKit's built-in adaptive bitrate strategy. The current
@@ -80,18 +107,7 @@ class RTMPCreator {
     public static func setVideoSettings(_ newVideoSettings: VideoSettingsType) {
         videoSettings = newVideoSettings
         Task {
-            await mixer.setFrameRate(Float64(videoSettings.fps))
-
-            await stream.setVideoSettings(VideoCodecSettings(
-                videoSize: CGSize(width: videoSettings.width, height: videoSettings.height),
-                bitRate: videoSettings.bitrate,
-                profileLevel: kVTProfileLevel_H264_High_AutoLevel as String,
-                scalingMode: .cropSourceToCleanAperture
-            ))
-
-            await stream.setAudioSettings(AudioCodecSettings(
-                bitRate: videoSettings.audioBitrate
-            ))
+            await applyVideoSettingsToStream()
 
             // Keep the adaptive-bitrate ceiling in sync with the new settings
             // while a stream is active.

@@ -199,9 +199,13 @@ const RTMPPublisher = forwardRef<RTMPPublisherRefProps, RTMPPublisherProps>(
     const handleOnNewBitrateReceived = (e: NewBitrateReceivedType) => {
       // iOS emits both `throughput` (actual outbound) and `encoderBitrate`
       // (ABR's current encoder budget). Android emits only `encoderBitrate`.
-      // Forward the raw event so consumers can read whichever fields the
-      // current platform provides.
-      onNewBitrateReceived && onNewBitrateReceived(e.nativeEvent);
+      // Pluck just the documented fields — forwarding e.nativeEvent directly
+      // would leak React Native's auto-added view-tag (`target`) to consumers.
+      onNewBitrateReceived &&
+        onNewBitrateReceived({
+          throughput: e.nativeEvent.throughput,
+          encoderBitrate: e.nativeEvent.encoderBitrate,
+        });
     };
 
     const handleOnStreamStateChanged = (e: StreamStateChangedType) => {

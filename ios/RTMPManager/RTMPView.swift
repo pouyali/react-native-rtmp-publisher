@@ -47,10 +47,15 @@ class RTMPView: UIView {
     }
   }
 
+  // Defaults are LANDSCAPE (1280x720). If the JS prop hasn't been written
+  // yet when performInitialSetup runs, the encoder is configured with these
+  // landscape dimensions. Otherwise the encoder would default to portrait
+  // (720x1280) and the camera's landscape frames would be cropped to portrait
+  // before reaching the player.
   @objc var videoSettings: NSDictionary = NSDictionary(
       dictionary: [
-        "width": 720,
-        "height": 1280,
+        "width": 1280,
+        "height": 720,
         "bitrate": 3000 * 1000,
         "audioBitrate": 128 * 1000,
         "fps": 30
@@ -63,8 +68,9 @@ class RTMPView: UIView {
   }
 
   private func applyVideoSettings() {
-      let width = videoSettings["width"] as? Int ?? 720
-      let height = videoSettings["height"] as? Int ?? 1280
+      // Defaults match the @objc var videoSettings landscape defaults above.
+      let width = videoSettings["width"] as? Int ?? 1280
+      let height = videoSettings["height"] as? Int ?? 720
       let bitrate = videoSettings["bitrate"] as? Int ?? (3000 * 1000)
       let audioBitrate = videoSettings["audioBitrate"] as? Int ?? (128 * 1000)
       let fps = videoSettings["fps"] as? Int ?? 30
@@ -322,8 +328,9 @@ class RTMPView: UIView {
   }
 
   private func performInitialSetup() {
-    let width = videoSettings["width"] as? Int ?? 720
-    let height = videoSettings["height"] as? Int ?? 1280
+    // Defaults match the @objc var videoSettings landscape defaults above.
+    let width = videoSettings["width"] as? Int ?? 1280
+    let height = videoSettings["height"] as? Int ?? 720
     let bitrate = videoSettings["bitrate"] as? Int ?? (3000 * 1000)
     let audioBitrate = videoSettings["audioBitrate"] as? Int ?? (128 * 1000)
     let fps = videoSettings["fps"] as? Int ?? 30

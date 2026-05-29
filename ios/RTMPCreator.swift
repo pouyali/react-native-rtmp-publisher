@@ -104,18 +104,26 @@ class RTMPCreator {
 
     /// Installs the custom throughput-driven adaptive bitrate strategy.
     /// `videoSettings.bitrate` is the initial encoder target; the
-    /// strategy can move it between `floorBps` (200 Kbps) and
+    /// strategy can move it between `floorBps` (100 Kbps) and
     /// `videoSettings.maxBitrate` based on observed outbound throughput.
     ///
     /// Replaces HaishinKit's HKStreamVideoAdaptiveBitRateStrategy whose
     /// queue-growth detection cannot see sharp cellular drops in time —
     /// the socket disconnects before three consecutive growing samples
     /// are observed. The custom strategy reacts to throughput directly.
+    ///
+    /// Floor of 100 Kbps: device data on bad-3G profiles showed network
+    /// throughput frequently dipping below 200 Kbps on its worst dips,
+    /// causing socket disconnects when the encoder couldn't drop low
+    /// enough to match. 100 Kbps gives the encoder headroom to ride
+    /// through brief deep dips. Video at this bitrate is heavily
+    /// degraded but the broadcast stays alive — preferable to a
+    /// disconnect for a sports broadcaster.
     private static func applyBitrateStrategy() async {
         let strategy = AdaptiveBitRateStrategy(
             absoluteCeilingBps: videoSettings.maxBitrate,
             initialTargetBps: videoSettings.bitrate,
-            floorBps: 200_000
+            floorBps: 100_000
         )
         await stream.setBitrateStorategy(strategy)
     }

@@ -4,6 +4,7 @@ import androidx.annotation.Nullable;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.WritableMap;
+import com.reactnativertmppublisher.modules.ConnectionChecker.BitrateReport;
 
 public class ObjectCaster {
   public static WritableMap caster(@Nullable Object data){
@@ -27,6 +28,15 @@ public class ObjectCaster {
 
     if(data instanceof Long){
       event.putDouble("data", (Long) data);
+    }
+
+    // Bitrate reports take the structured BitrateReport shape so the JS
+    // bridge sees `{ encoderBitrate }` directly — matching iOS, which emits
+    // both `throughput` and `encoderBitrate`. Android only knows the encoder
+    // budget (no separate outbound throughput exposed by the underlying
+    // library), so `throughput` is left absent.
+    if (data instanceof BitrateReport) {
+      event.putDouble("encoderBitrate", ((BitrateReport) data).encoderBitrate);
     }
 
     return event;

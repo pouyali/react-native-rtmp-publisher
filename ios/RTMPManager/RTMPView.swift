@@ -252,10 +252,13 @@ class RTMPView: UIView {
         // adaptive-bitrate strategy has currently settled on.
         let encoderBitrate = await RTMPCreator.stream.videoSettings.bitRate
         await MainActor.run {
-          // JS reads e.nativeEvent.data — the key MUST be "data" to match
-          // the wrapper and the other events (e.g. onStreamStateChanged).
+          // BitrateReport shape — matches the JS wrapper's typed payload
+          // and the Android serializer (ObjectCaster). `throughput` is the
+          // actual outbound bytes/s from the RTMP socket; `encoderBitrate`
+          // is what HaishinKit's adaptive-bitrate strategy has the H.264
+          // encoder currently set to.
           self.onNewBitrateReceived?([
-            "data": bitsPerSecond,
+            "throughput": bitsPerSecond,
             "encoderBitrate": encoderBitrate,
           ])
         }

@@ -93,16 +93,37 @@ class RTMPCreator {
         }
     }
 
+    /// Resolves the bitrate to apply to the encoder at startPublish /
+    /// videoSettings-prop time. When the adaptive strategy has learned
+    /// a sustainable rate in a previous session (lastEncoderBitrateBps > 0),
+    /// use that — capped to the preset bitrate so we never start above
+    /// the user's chosen quality. Otherwise fall back to the preset.
+    ///
+    /// This is shared between applyVideoSettingsToStream and
+    /// applyBitrateStrategy so the encoder and the strategy agree on
+    /// the initial target from the very first frame. Without sharing,
+    /// the ~1.5 s gap between the two calls would produce a brief
+    /// window where the encoder runs at the preset bitrate (e.g.
+    /// 1.2 Mbps) on a network that previously sustained only ~100 Kbps,
+    /// adding socket pressure right at the moment we want least.
+    private static func resolveInitialBitrateBps() -> Int {
+        if lastEncoderBitrateBps > 0 {
+            return min(lastEncoderBitrateBps, videoSettings.bitrate)
+        }
+        return videoSettings.bitrate
+    }
+
     /// Applies the currently-stored `videoSettings` to the live encoder.
     /// Shared between `startPublish` (every publish lifecycle, so the encoder
     /// survives close+republish with the right config) and `setVideoSettings`
     /// (when the app changes settings mid-stream or at view-attach time).
     private static func applyVideoSettingsToStream() async {
+        let initialBitrate = resolveInitialBitrateBps()
         await mixer.setFrameRate(Float64(videoSettings.fps))
 
         await stream.setVideoSettings(VideoCodecSettings(
             videoSize: CGSize(width: videoSettings.width, height: videoSettings.height),
-            bitRate: videoSettings.bitrate,
+            bitRate: initialBitrate,
             profileLevel: kVTProfileLevel_H264_High_AutoLevel as String,
             scalingMode: .cropSourceToCleanAperture
         ))
@@ -142,30 +163,17 @@ class RTMPCreator {
     /// degraded but the broadcast stays alive — preferable to a
     /// disconnect for a sports broadcaster.
     private static func applyBitrateStrategy() async {
-        let initialTarget: Int
-        if lastEncoderBitrateBps > 0 {
-            initialTarget = min(lastEncoderBitrateBps, videoSettings.bitrate)
-        } else {
-            initialTarget = videoSettings.bitrate
-        }
+        let initialTarget = resolveInitialBitrateBps()
         let strategy = AdaptiveBitRateStrategy(
             absoluteCeilingBps: videoSettings.maxBitrate,
             initialTargetBps: initialTarget,
             floorBps: 100_000
         )
         await stream.setBitrateStorategy(strategy)
-        // Push the strategy's initial target to the encoder immediately
-        // so the new publish session starts producing bits at the
-        // learned rate, not at the preset that applyVideoSettingsToStream
-        // just set. Without this, the encoder runs at preset bitrate
-        // until the strategy's first NetworkMonitorEvent fires — which
-        // on a network that previously sustained only ~100 Kbps would
-        // mean the socket dies again before the strategy can react.
-        if initialTarget != videoSettings.bitrate {
-            var settings = await stream.videoSettings
-            settings.bitRate = initialTarget
-            await stream.setVideoSettings(settings)
-        }
+        // applyVideoSettingsToStream already pushed initialTarget to the
+        // encoder via resolveInitialBitrateBps, so the encoder, strategy,
+        // and lastEncoderBitrateBps are all in sync from the first frame.
+        // No second setVideoSettings call needed here.
     }
 
     public static func setVideoSettings(_ newVideoSettings: VideoSettingsType) {

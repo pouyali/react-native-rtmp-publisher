@@ -104,9 +104,10 @@ class RTMPModule: NSObject {
             reject("INVALID_ARGUMENTS", "Invalid video settings", nil)
             return
         }
+        let maxBitrate = videoSettingsDict["maxBitrate"] as? Int ?? bitrate
         let audioBitrate = videoSettingsDict["audioBitrate"] as? Int ?? 128000
         let fps = videoSettingsDict["fps"] as? Int ?? 30
-        let videoSettings = VideoSettingsType(width: width, height: height, bitrate: bitrate, audioBitrate: audioBitrate, fps: fps)
+        let videoSettings = VideoSettingsType(width: width, height: height, bitrate: bitrate, maxBitrate: maxBitrate, audioBitrate: audioBitrate, fps: fps)
 
         RTMPCreator.setVideoSettings(videoSettings)
         resolve(nil)

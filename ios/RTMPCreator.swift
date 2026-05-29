@@ -12,7 +12,16 @@ import VideoToolbox
 struct VideoSettingsType {
     var width: Int
     var height: Int
+    /// Initial encoder bitrate target. The adaptive strategy can move
+    /// the live encoder bitrate between `floorBps` (see strategy) and
+    /// `maxBitrate` based on observed throughput.
     var bitrate: Int
+    /// Absolute ceiling the adaptive strategy may step the encoder up
+    /// to. Defaults to `bitrate` (no step-up) when the consumer does not
+    /// explicitly opt into a higher cap; consumers that want
+    /// auto-step-up beyond their starting preset should pass the
+    /// highest-preset bitrate here.
+    var maxBitrate: Int
     var audioBitrate: Int
     var fps: Int
 }
@@ -34,6 +43,7 @@ class RTMPCreator {
         width: 720,
         height: 1280,
         bitrate: 3000 * 1024,
+        maxBitrate: 3000 * 1024,
         audioBitrate: 128 * 1000,
         fps: 30
     )
@@ -92,14 +102,20 @@ class RTMPCreator {
         ))
     }
 
-    /// Installs HaishinKit's built-in adaptive bitrate strategy. The current
-    /// `videoSettings.bitrate` is the ceiling; HaishinKit's NetworkMonitor
-    /// (driven by RTMPConnection) adapts downward under congestion and climbs
-    /// back toward the ceiling when bandwidth recovers. Re-installed whenever
-    /// the ceiling changes so the maximum tracks the requested video settings.
+    /// Installs the custom throughput-driven adaptive bitrate strategy.
+    /// `videoSettings.bitrate` is the initial encoder target; the
+    /// strategy can move it between `floorBps` (200 Kbps) and
+    /// `videoSettings.maxBitrate` based on observed outbound throughput.
+    ///
+    /// Replaces HaishinKit's HKStreamVideoAdaptiveBitRateStrategy whose
+    /// queue-growth detection cannot see sharp cellular drops in time —
+    /// the socket disconnects before three consecutive growing samples
+    /// are observed. The custom strategy reacts to throughput directly.
     private static func applyBitrateStrategy() async {
-        let strategy = HKStreamVideoAdaptiveBitRateStrategy(
-            mamimumVideoBitrate: videoSettings.bitrate
+        let strategy = AdaptiveBitRateStrategy(
+            absoluteCeilingBps: videoSettings.maxBitrate,
+            initialTargetBps: videoSettings.bitrate,
+            floorBps: 200_000
         )
         await stream.setBitrateStorategy(strategy)
     }

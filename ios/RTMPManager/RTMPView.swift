@@ -57,6 +57,7 @@ class RTMPView: UIView {
         "width": 1280,
         "height": 720,
         "bitrate": 3000 * 1000,
+        "maxBitrate": 3000 * 1000,
         "audioBitrate": 128 * 1000,
         "fps": 30
       ]
@@ -72,6 +73,10 @@ class RTMPView: UIView {
       let width = videoSettings["width"] as? Int ?? 1280
       let height = videoSettings["height"] as? Int ?? 720
       let bitrate = videoSettings["bitrate"] as? Int ?? (3000 * 1000)
+      // Default maxBitrate to bitrate when not provided — preserves the
+      // legacy "encoder runs at exactly the configured bitrate" behavior
+      // for consumers that haven't adopted the adaptive ceiling yet.
+      let maxBitrate = videoSettings["maxBitrate"] as? Int ?? bitrate
       let audioBitrate = videoSettings["audioBitrate"] as? Int ?? (128 * 1000)
       let fps = videoSettings["fps"] as? Int ?? 30
 
@@ -80,7 +85,7 @@ class RTMPView: UIView {
         await RTMPCreator.mixer.setSessionPreset(preset)
       }
 
-      RTMPCreator.setVideoSettings(VideoSettingsType(width: width, height: height, bitrate: bitrate, audioBitrate: audioBitrate, fps: fps))
+      RTMPCreator.setVideoSettings(VideoSettingsType(width: width, height: height, bitrate: bitrate, maxBitrate: maxBitrate, audioBitrate: audioBitrate, fps: fps))
   }
 
   @objc var videoOrientation: NSString = "portrait" {
@@ -313,6 +318,7 @@ class RTMPView: UIView {
     let width = videoSettings["width"] as? Int ?? 1280
     let height = videoSettings["height"] as? Int ?? 720
     let bitrate = videoSettings["bitrate"] as? Int ?? (3000 * 1000)
+    let maxBitrate = videoSettings["maxBitrate"] as? Int ?? bitrate
     let audioBitrate = videoSettings["audioBitrate"] as? Int ?? (128 * 1000)
     let fps = videoSettings["fps"] as? Int ?? 30
     let preset = selectCapturePreset(for: width, height: height)
@@ -327,6 +333,7 @@ class RTMPView: UIView {
       width: width,
       height: height,
       bitrate: bitrate,
+      maxBitrate: maxBitrate,
       audioBitrate: audioBitrate,
       fps: fps
     )

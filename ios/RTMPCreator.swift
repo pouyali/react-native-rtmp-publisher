@@ -154,6 +154,18 @@ class RTMPCreator {
             floorBps: 100_000
         )
         await stream.setBitrateStorategy(strategy)
+        // Push the strategy's initial target to the encoder immediately
+        // so the new publish session starts producing bits at the
+        // learned rate, not at the preset that applyVideoSettingsToStream
+        // just set. Without this, the encoder runs at preset bitrate
+        // until the strategy's first NetworkMonitorEvent fires — which
+        // on a network that previously sustained only ~100 Kbps would
+        // mean the socket dies again before the strategy can react.
+        if initialTarget != videoSettings.bitrate {
+            var settings = await stream.videoSettings
+            settings.bitRate = initialTarget
+            await stream.setVideoSettings(settings)
+        }
     }
 
     public static func setVideoSettings(_ newVideoSettings: VideoSettingsType) {

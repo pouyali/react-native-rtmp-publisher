@@ -318,6 +318,19 @@ class RTMPView: UIView {
     let preset = selectCapturePreset(for: width, height: height)
     let orientation = videoOrientation
 
+    // Mirror the prop into RTMPCreator's stored videoSettings so any
+    // later read (e.g. RTMPCreator.startPublish re-applying after a
+    // republish lifecycle) sees the value the JS prop configured, not
+    // the hardcoded RTMPCreator default. Without this, RTMPCreator
+    // and the stream's encoder go out of sync on every republish.
+    RTMPCreator.videoSettings = VideoSettingsType(
+      width: width,
+      height: height,
+      bitrate: bitrate,
+      audioBitrate: audioBitrate,
+      fps: fps
+    )
+
     Task {
       // Configure audio session and attach audio
       configureAudioSession()

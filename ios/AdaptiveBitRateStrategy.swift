@@ -159,5 +159,12 @@ public final actor AdaptiveBitRateStrategy: HKStreamBitRateStrategy {
         var settings = await stream.videoSettings
         settings.bitRate = currentTargetBps
         await stream.setVideoSettings(settings)
+        // Persist the new target so a subsequent reconnect-republish
+        // resumes from this learned value instead of redoing the
+        // climb-down from preset bitrate. RTMPCreator is @MainActor.
+        let target = currentTargetBps
+        await MainActor.run {
+            RTMPCreator.lastEncoderBitrateBps = target
+        }
     }
 }

@@ -39,6 +39,16 @@ class RTMPCreator {
     public static var isTorchEnabled: Bool = false
     public static var isAudioAttached: Bool = false
     public static var isVideoAttached: Bool = false
+    /// Last encoder bitrate the adaptive strategy settled on, written
+    /// back from AdaptiveBitRateStrategy on every change. Used as the
+    /// initial target when installing a new strategy on republish so
+    /// the encoder doesn't redo the discovery climb from preset
+    /// bitrate (e.g. 1.2 Mbps) down to whatever the network actually
+    /// sustains (e.g. 200 Kbps). Reset to 0 on stopPublish so the
+    /// next broadcast starts fresh.
+    ///
+    /// 0 = "no prior knowledge" — fall back to videoSettings.bitrate.
+    public static var lastEncoderBitrateBps: Int = 0
     public static var videoSettings: VideoSettingsType = VideoSettingsType(
         width: 720,
         height: 1280,
@@ -103,9 +113,21 @@ class RTMPCreator {
     }
 
     /// Installs the custom throughput-driven adaptive bitrate strategy.
-    /// `videoSettings.bitrate` is the initial encoder target; the
-    /// strategy can move it between `floorBps` (100 Kbps) and
-    /// `videoSettings.maxBitrate` based on observed outbound throughput.
+    /// The strategy can move the encoder bitrate between `floorBps`
+    /// (100 Kbps) and `videoSettings.maxBitrate` based on observed
+    /// outbound throughput.
+    ///
+    /// Initial target carries over from the previous publish session:
+    /// if `lastEncoderBitrateBps > 0` (we have prior network knowledge),
+    /// start at min(last, preset) — never above the preset's bitrate,
+    /// but if the network was bad last time, don't redo the discovery
+    /// climb from preset down to the actual sustainable rate.
+    ///
+    /// Without this carryover, every reconnect would re-attempt
+    /// `videoSettings.bitrate` (e.g. 1.2 Mbps) on a network that
+    /// previously demonstrated it could only sustain 200 Kbps —
+    /// causing a 20-second step-down sequence and a high risk of
+    /// re-disconnect during that climb.
     ///
     /// Replaces HaishinKit's HKStreamVideoAdaptiveBitRateStrategy whose
     /// queue-growth detection cannot see sharp cellular drops in time —
@@ -120,9 +142,15 @@ class RTMPCreator {
     /// degraded but the broadcast stays alive — preferable to a
     /// disconnect for a sports broadcaster.
     private static func applyBitrateStrategy() async {
+        let initialTarget: Int
+        if lastEncoderBitrateBps > 0 {
+            initialTarget = min(lastEncoderBitrateBps, videoSettings.bitrate)
+        } else {
+            initialTarget = videoSettings.bitrate
+        }
         let strategy = AdaptiveBitRateStrategy(
             absoluteCeilingBps: videoSettings.maxBitrate,
-            initialTargetBps: videoSettings.bitrate,
+            initialTargetBps: initialTarget,
             floorBps: 100_000
         )
         await stream.setBitrateStorategy(strategy)
@@ -150,6 +178,9 @@ class RTMPCreator {
                 NSLog("RTMPCreator: stop failed: %@", error.localizedDescription)
             }
             isStreaming = false
+            // User stopped — the next broadcast is a fresh attempt, so
+            // discard learned encoder bitrate from this session.
+            lastEncoderBitrateBps = 0
             resolve(nil)
         }
     }
@@ -163,6 +194,9 @@ class RTMPCreator {
                 NSLog("RTMPCreator: stop failed: %@", error.localizedDescription)
             }
             isStreaming = false
+            // User stopped — the next broadcast is a fresh attempt, so
+            // discard learned encoder bitrate from this session.
+            lastEncoderBitrateBps = 0
         }
     }
 

@@ -47,7 +47,11 @@ public final actor AdaptiveBitRateStrategy: HKStreamBitRateStrategy {
     /// Required consecutive in-headroom samples before a step-up fires.
     /// Larger than the step-down requirement to prevent oscillation on a
     /// network that's borderline (good for 5 s, bad for 5 s, ...).
-    private static let stepUpConsecutiveSamples = 20
+    /// At ~1.5 s sample cadence this is roughly a 15 s settling window —
+    /// faster than the conservative 30 s default would be, chosen for
+    /// mobile sports streaming where quick recovery from dips improves
+    /// UX more than oscillation protection helps.
+    private static let stepUpConsecutiveSamples = 10
 
     /// Throughput must drop below this fraction of the current target
     /// to count as a sub-threshold sample.

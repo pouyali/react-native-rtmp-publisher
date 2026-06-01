@@ -220,12 +220,14 @@ public class Publisher {
     try {
       _adaptiveBitrate.stop();
 
-      boolean isStreaming = _rtmpCamera.isStreaming();
-
-      if (!isStreaming) {
-        return;
-      }
-
+      // Always call through to Pedro's stopStream(), even when isStreaming()
+      // is false. After a network-loss-induced onConnectionFailed the
+      // 'streaming' flag is already cleared but the AudioRecord / encoder
+      // remain initialized; without this teardown, the next startStream()
+      // tries to re-prepare audio on top of a stale session and trips a
+      // fatal AudioTrackShared::releaseBuffer assertion. Pedro's stopStream
+      // is idempotent: its inner cleanup block is gated on
+      // !recordController.isRecording() rather than the streaming flag.
       _rtmpCamera.stopStream();
     } catch (Exception e) {
       e.printStackTrace();

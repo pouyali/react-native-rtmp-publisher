@@ -135,10 +135,21 @@ class RTMPView: UIView {
       hasAttachedStream = false
     }
 
-    // Detach camera and audio
+    // Detach camera and audio, then stop the capture session.
+    //
+    // Stopping the session and detaching the camera here is what frees the
+    // physical camera for the NEXT RTMPView. This Task is fire-and-forget
+    // (cleanup is sync, called from removeFromSuperview/deinit), but the
+    // ORDER matters: detach the inputs first, then stopCapturing() so the
+    // AVCaptureSession releases its capture source (FigCaptureSourceRemote)
+    // promptly. Without the explicit stopCapturing(), the source lingered
+    // and the next entry's session-start contended with it (Fig err -12710 /
+    // -17281), leaving the preview black for ~7s until the source finally
+    // released. See performInitialSetup for the matching startCapturing().
     Task {
       try? await RTMPCreator.mixer.attachVideo(nil)
       try? await RTMPCreator.mixer.attachAudio(nil)
+      await RTMPCreator.mixer.stopCapturing()
       await MainActor.run {
         RTMPCreator.isVideoAttached = false
         RTMPCreator.isAudioAttached = false
@@ -354,6 +365,16 @@ class RTMPView: UIView {
       // Apply capture settings
       await RTMPCreator.mixer.setSessionPreset(preset)
       await RTMPCreator.mixer.setFrameRate(Float64(fps))
+
+      // Explicitly start the capture session. attachVideo does NOT guarantee
+      // the AVCaptureSession is running — when a previous RTMPView's teardown
+      // is still releasing the camera source, the implicit start contends and
+      // the session can take several seconds to come up (black preview).
+      // startCapturing() is idempotent (session.startRunning() guards on
+      // !isRunning), so this is safe on the already-running path too. Paired
+      // with stopCapturing() in cleanup so each view's session lifecycle is
+      // deterministic.
+      await RTMPCreator.mixer.startCapturing()
 
       // Apply video orientation
       switch orientation {

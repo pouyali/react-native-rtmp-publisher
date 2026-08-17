@@ -6,6 +6,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import PublisherComponent, {
+  type BitrateReport,
   type DisconnectType,
   type ConnectionFailedType,
   type ConnectionStartedType,
@@ -56,9 +57,18 @@ export interface RTMPPublisherProps {
    */
   onDisconnect?: (data: null) => void;
   /**
-   * Callback for receiving new bitrate value about stream
+   * Callback for bitrate telemetry from the native publisher.
+   *
+   * iOS payload: `{ throughput, encoderBitrate }` — throughput is the actual
+   * outbound bit-rate from the RTMP socket, encoderBitrate is what the
+   * adaptive-bitrate strategy has the H.264 encoder currently set to.
+   *
+   * Android payload: `{ encoderBitrate }` — the value the underlying
+   * rtmp-rtsp-stream library reports from its own ABR.
+   *
+   * Both fields are optional; consumers should handle either being absent.
    */
-  onNewBitrateReceived?: (data: number) => void;
+  onNewBitrateReceived?: (data: BitrateReport) => void;
   /**
    * Alternatively callback for changing stream state
    * Returns parameter StreamState type
@@ -187,7 +197,15 @@ const RTMPPublisher = forwardRef<RTMPPublisherRefProps, RTMPPublisherProps>(
     };
 
     const handleOnNewBitrateReceived = (e: NewBitrateReceivedType) => {
-      onNewBitrateReceived && onNewBitrateReceived(e.nativeEvent.data);
+      // iOS emits both `throughput` (actual outbound) and `encoderBitrate`
+      // (ABR's current encoder budget). Android emits only `encoderBitrate`.
+      // Pluck just the documented fields — forwarding e.nativeEvent directly
+      // would leak React Native's auto-added view-tag (`target`) to consumers.
+      onNewBitrateReceived &&
+        onNewBitrateReceived({
+          throughput: e.nativeEvent.throughput,
+          encoderBitrate: e.nativeEvent.encoderBitrate,
+        });
     };
 
     const handleOnStreamStateChanged = (e: StreamStateChangedType) => {

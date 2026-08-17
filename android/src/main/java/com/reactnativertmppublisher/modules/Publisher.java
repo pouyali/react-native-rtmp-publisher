@@ -35,11 +35,13 @@ public class Publisher {
 
   ConnectionChecker _connectionChecker = new ConnectionChecker();
   BluetoothDeviceConnector _bluetoothDeviceConnector;
+  private final AdaptiveBitrate _adaptiveBitrate;
 
   public Publisher(ThemedReactContext reactContext, SurfaceView surfaceView) {
     _reactContext = reactContext;
     _surfaceView = surfaceView;
     _rtmpCamera = new RtmpCamera1(surfaceView, _connectionChecker);
+    _adaptiveBitrate = new AdaptiveBitrate(_rtmpCamera);
     _bluetoothDeviceConnector = new BluetoothDeviceConnector(reactContext);
 
     _bluetoothDeviceConnector.addListener(createBluetoothDeviceListener());
@@ -194,6 +196,10 @@ public class Publisher {
 
       String url = _streamUrl + "/" + _streamName;
       _rtmpCamera.startStream(url);
+
+      // Always-on adaptive bitrate: _videoBitrate is the ceiling; the loop
+      // adapts downward under congestion and climbs back when stable.
+      _adaptiveBitrate.start(_videoBitrate);
     } catch (Exception e) {
       e.printStackTrace();
     }
@@ -205,16 +211,23 @@ public class Publisher {
     _videoBitrate = bitrate;
     _audioBitrate = audioBitrate;
     _fps = fps;
+
+    // Keep the adaptive-bitrate ceiling in sync with the requested settings.
+    _adaptiveBitrate.setCeiling(bitrate);
   }
 
   public void stopStream() {
     try {
-      boolean isStreaming = _rtmpCamera.isStreaming();
+      _adaptiveBitrate.stop();
 
-      if (!isStreaming) {
-        return;
-      }
-
+      // Always call through to Pedro's stopStream(), even when isStreaming()
+      // is false. After a network-loss-induced onConnectionFailed the
+      // 'streaming' flag is already cleared but the AudioRecord / encoder
+      // remain initialized; without this teardown, the next startStream()
+      // tries to re-prepare audio on top of a stale session and trips a
+      // fatal AudioTrackShared::releaseBuffer assertion. Pedro's stopStream
+      // is idempotent: its inner cleanup block is gated on
+      // !recordController.isRecording() rather than the streaming flag.
       _rtmpCamera.stopStream();
     } catch (Exception e) {
       e.printStackTrace();
@@ -277,6 +290,7 @@ public class Publisher {
   public boolean handlePause() {
     boolean wasStreaming = false;
     try {
+      _adaptiveBitrate.stop();
       wasStreaming = _rtmpCamera.isStreaming();
       if (wasStreaming) {
         _rtmpCamera.stopStream();
@@ -313,6 +327,7 @@ public class Publisher {
    */
   public void handleDestroy() {
     try {
+      _adaptiveBitrate.stop();
       if (_rtmpCamera.isStreaming()) {
         _rtmpCamera.stopStream();
       }

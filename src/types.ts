@@ -121,7 +121,20 @@ export enum AudioInputType {
 export interface VideoSettingsType {
   width: number;
   height: number;
+  /**
+   * Initial encoder bitrate target. The native adaptive strategy can
+   * move the live encoder bitrate between an internal floor (200 Kbps)
+   * and `maxBitrate` based on observed outbound throughput.
+   */
   bitrate: number;
+  /**
+   * Absolute ceiling the adaptive strategy may step the encoder up to.
+   * When omitted, defaults to `bitrate` — i.e. no step-up, encoder
+   * effectively static at `bitrate`. Consumers that want auto-step-up
+   * beyond their starting preset should pass the highest-preset
+   * bitrate here (e.g. 4_500_000 for 1080p quality).
+   */
+  maxBitrate?: number;
   audioBitrate?: number;
   /**
    * Frames per second for the stream

@@ -12,7 +12,16 @@ import VideoToolbox
 struct VideoSettingsType {
     var width: Int
     var height: Int
+    /// Initial encoder bitrate target. The adaptive strategy can move
+    /// the live encoder bitrate between `floorBps` (see strategy) and
+    /// `maxBitrate` based on observed throughput.
     var bitrate: Int
+    /// Absolute ceiling the adaptive strategy may step the encoder up
+    /// to. Defaults to `bitrate` (no step-up) when the consumer does not
+    /// explicitly opt into a higher cap; consumers that want
+    /// auto-step-up beyond their starting preset should pass the
+    /// highest-preset bitrate here.
+    var maxBitrate: Int
     var audioBitrate: Int
     var fps: Int
 }
@@ -30,10 +39,21 @@ class RTMPCreator {
     public static var isTorchEnabled: Bool = false
     public static var isAudioAttached: Bool = false
     public static var isVideoAttached: Bool = false
+    /// Last encoder bitrate the adaptive strategy settled on, written
+    /// back from AdaptiveBitRateStrategy on every change. Used as the
+    /// initial target when installing a new strategy on republish so
+    /// the encoder doesn't redo the discovery climb from preset
+    /// bitrate (e.g. 1.2 Mbps) down to whatever the network actually
+    /// sustains (e.g. 200 Kbps). Reset to 0 on stopPublish so the
+    /// next broadcast starts fresh.
+    ///
+    /// 0 = "no prior knowledge" — fall back to videoSettings.bitrate.
+    public static var lastEncoderBitrateBps: Int = 0
     public static var videoSettings: VideoSettingsType = VideoSettingsType(
         width: 720,
         height: 1280,
         bitrate: 3000 * 1024,
+        maxBitrate: 3000 * 1024,
         audioBitrate: 128 * 1000,
         fps: 30
     )
@@ -53,9 +73,18 @@ class RTMPCreator {
     public static func startPublish(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock){
         Task {
             do {
+                // Re-apply the encoder settings the app has configured before
+                // every publish. HaishinKit's `RTMPStream.close()` resets the
+                // outgoing.videoSettings back to its hardcoded default — so
+                // after a disconnect/republish cycle, without this re-apply
+                // the encoder ends up at the wrong bitrate (typically higher
+                // than the app requested, which is exactly the wrong
+                // direction on a bad network).
+                await applyVideoSettingsToStream()
                 _ = try await connection.connect(_streamUrl)
                 _ = try await stream.publish(_streamName)
                 isStreaming = true
+                await applyBitrateStrategy()
                 resolve(nil)
             } catch {
                 NSLog("RTMPCreator: publish failed: %@", error.localizedDescription)
@@ -64,21 +93,99 @@ class RTMPCreator {
         }
     }
 
+    /// Resolves the bitrate to apply to the encoder at startPublish /
+    /// videoSettings-prop time. When the adaptive strategy has learned
+    /// a sustainable rate in a previous session (lastEncoderBitrateBps > 0),
+    /// use that — capped to the preset bitrate so we never start above
+    /// the user's chosen quality. Otherwise fall back to the preset.
+    ///
+    /// This is shared between applyVideoSettingsToStream and
+    /// applyBitrateStrategy so the encoder and the strategy agree on
+    /// the initial target from the very first frame. Without sharing,
+    /// the ~1.5 s gap between the two calls would produce a brief
+    /// window where the encoder runs at the preset bitrate (e.g.
+    /// 1.2 Mbps) on a network that previously sustained only ~100 Kbps,
+    /// adding socket pressure right at the moment we want least.
+    private static func resolveInitialBitrateBps() -> Int {
+        if lastEncoderBitrateBps > 0 {
+            return min(lastEncoderBitrateBps, videoSettings.bitrate)
+        }
+        return videoSettings.bitrate
+    }
+
+    /// Applies the currently-stored `videoSettings` to the live encoder.
+    /// Shared between `startPublish` (every publish lifecycle, so the encoder
+    /// survives close+republish with the right config) and `setVideoSettings`
+    /// (when the app changes settings mid-stream or at view-attach time).
+    private static func applyVideoSettingsToStream() async {
+        let initialBitrate = resolveInitialBitrateBps()
+        await mixer.setFrameRate(Float64(videoSettings.fps))
+
+        await stream.setVideoSettings(VideoCodecSettings(
+            videoSize: CGSize(width: videoSettings.width, height: videoSettings.height),
+            bitRate: initialBitrate,
+            profileLevel: kVTProfileLevel_H264_High_AutoLevel as String,
+            scalingMode: .cropSourceToCleanAperture
+        ))
+
+        await stream.setAudioSettings(AudioCodecSettings(
+            bitRate: videoSettings.audioBitrate
+        ))
+    }
+
+    /// Installs the custom throughput-driven adaptive bitrate strategy.
+    /// The strategy can move the encoder bitrate between `floorBps`
+    /// (100 Kbps) and `videoSettings.maxBitrate` based on observed
+    /// outbound throughput.
+    ///
+    /// Initial target carries over from the previous publish session:
+    /// if `lastEncoderBitrateBps > 0` (we have prior network knowledge),
+    /// start at min(last, preset) — never above the preset's bitrate,
+    /// but if the network was bad last time, don't redo the discovery
+    /// climb from preset down to the actual sustainable rate.
+    ///
+    /// Without this carryover, every reconnect would re-attempt
+    /// `videoSettings.bitrate` (e.g. 1.2 Mbps) on a network that
+    /// previously demonstrated it could only sustain 200 Kbps —
+    /// causing a 20-second step-down sequence and a high risk of
+    /// re-disconnect during that climb.
+    ///
+    /// Replaces HaishinKit's HKStreamVideoAdaptiveBitRateStrategy whose
+    /// queue-growth detection cannot see sharp cellular drops in time —
+    /// the socket disconnects before three consecutive growing samples
+    /// are observed. The custom strategy reacts to throughput directly.
+    ///
+    /// Floor of 100 Kbps: device data on bad-3G profiles showed network
+    /// throughput frequently dipping below 200 Kbps on its worst dips,
+    /// causing socket disconnects when the encoder couldn't drop low
+    /// enough to match. 100 Kbps gives the encoder headroom to ride
+    /// through brief deep dips. Video at this bitrate is heavily
+    /// degraded but the broadcast stays alive — preferable to a
+    /// disconnect for a sports broadcaster.
+    private static func applyBitrateStrategy() async {
+        let initialTarget = resolveInitialBitrateBps()
+        let strategy = AdaptiveBitRateStrategy(
+            absoluteCeilingBps: videoSettings.maxBitrate,
+            initialTargetBps: initialTarget,
+            floorBps: 100_000
+        )
+        await stream.setBitrateStorategy(strategy)
+        // applyVideoSettingsToStream already pushed initialTarget to the
+        // encoder via resolveInitialBitrateBps, so the encoder, strategy,
+        // and lastEncoderBitrateBps are all in sync from the first frame.
+        // No second setVideoSettings call needed here.
+    }
+
     public static func setVideoSettings(_ newVideoSettings: VideoSettingsType) {
         videoSettings = newVideoSettings
         Task {
-            await mixer.setFrameRate(Float64(videoSettings.fps))
+            await applyVideoSettingsToStream()
 
-            await stream.setVideoSettings(VideoCodecSettings(
-                videoSize: CGSize(width: videoSettings.width, height: videoSettings.height),
-                bitRate: videoSettings.bitrate,
-                profileLevel: kVTProfileLevel_H264_High_AutoLevel as String,
-                scalingMode: .cropSourceToCleanAperture
-            ))
-
-            await stream.setAudioSettings(AudioCodecSettings(
-                bitRate: videoSettings.audioBitrate
-            ))
+            // Keep the adaptive-bitrate ceiling in sync with the new settings
+            // while a stream is active.
+            if isStreaming {
+                await applyBitrateStrategy()
+            }
         }
     }
 
@@ -91,6 +198,9 @@ class RTMPCreator {
                 NSLog("RTMPCreator: stop failed: %@", error.localizedDescription)
             }
             isStreaming = false
+            // User stopped — the next broadcast is a fresh attempt, so
+            // discard learned encoder bitrate from this session.
+            lastEncoderBitrateBps = 0
             resolve(nil)
         }
     }
@@ -104,6 +214,9 @@ class RTMPCreator {
                 NSLog("RTMPCreator: stop failed: %@", error.localizedDescription)
             }
             isStreaming = false
+            // User stopped — the next broadcast is a fresh attempt, so
+            // discard learned encoder bitrate from this session.
+            lastEncoderBitrateBps = 0
         }
     }
 

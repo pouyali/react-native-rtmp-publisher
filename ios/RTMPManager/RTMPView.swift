@@ -18,6 +18,7 @@ class RTMPView: UIView {
   private var hasAttachedStream = false
   private var connectionStatusTask: Task<Void, Never>?
   private var streamStatusTask: Task<Void, Never>?
+  private var bitrateReportTask: Task<Void, Never>?
   private var hasCleanedUp = false
 
   @objc var onDisconnect: RCTDirectEventBlock?
@@ -46,11 +47,17 @@ class RTMPView: UIView {
     }
   }
 
+  // Defaults are LANDSCAPE (1280x720). If the JS prop hasn't been written
+  // yet when performInitialSetup runs, the encoder is configured with these
+  // landscape dimensions. Otherwise the encoder would default to portrait
+  // (720x1280) and the camera's landscape frames would be cropped to portrait
+  // before reaching the player.
   @objc var videoSettings: NSDictionary = NSDictionary(
       dictionary: [
-        "width": 720,
-        "height": 1280,
+        "width": 1280,
+        "height": 720,
         "bitrate": 3000 * 1000,
+        "maxBitrate": 3000 * 1000,
         "audioBitrate": 128 * 1000,
         "fps": 30
       ]
@@ -62,9 +69,14 @@ class RTMPView: UIView {
   }
 
   private func applyVideoSettings() {
-      let width = videoSettings["width"] as? Int ?? 720
-      let height = videoSettings["height"] as? Int ?? 1280
+      // Defaults match the @objc var videoSettings landscape defaults above.
+      let width = videoSettings["width"] as? Int ?? 1280
+      let height = videoSettings["height"] as? Int ?? 720
       let bitrate = videoSettings["bitrate"] as? Int ?? (3000 * 1000)
+      // Default maxBitrate to bitrate when not provided — preserves the
+      // legacy "encoder runs at exactly the configured bitrate" behavior
+      // for consumers that haven't adopted the adaptive ceiling yet.
+      let maxBitrate = videoSettings["maxBitrate"] as? Int ?? bitrate
       let audioBitrate = videoSettings["audioBitrate"] as? Int ?? (128 * 1000)
       let fps = videoSettings["fps"] as? Int ?? 30
 
@@ -73,7 +85,7 @@ class RTMPView: UIView {
         await RTMPCreator.mixer.setSessionPreset(preset)
       }
 
-      RTMPCreator.setVideoSettings(VideoSettingsType(width: width, height: height, bitrate: bitrate, audioBitrate: audioBitrate, fps: fps))
+      RTMPCreator.setVideoSettings(VideoSettingsType(width: width, height: height, bitrate: bitrate, maxBitrate: maxBitrate, audioBitrate: audioBitrate, fps: fps))
   }
 
   @objc var videoOrientation: NSString = "portrait" {
@@ -108,6 +120,8 @@ class RTMPView: UIView {
     connectionStatusTask = nil
     streamStatusTask?.cancel()
     streamStatusTask = nil
+    bitrateReportTask?.cancel()
+    bitrateReportTask = nil
 
     // Capture view reference before potential deallocation
     let view = hkView!
@@ -121,10 +135,21 @@ class RTMPView: UIView {
       hasAttachedStream = false
     }
 
-    // Detach camera and audio
+    // Detach camera and audio, then stop the capture session.
+    //
+    // Stopping the session and detaching the camera here is what frees the
+    // physical camera for the NEXT RTMPView. This Task is fire-and-forget
+    // (cleanup is sync, called from removeFromSuperview/deinit), but the
+    // ORDER matters: detach the inputs first, then stopCapturing() so the
+    // AVCaptureSession releases its capture source (FigCaptureSourceRemote)
+    // promptly. Without the explicit stopCapturing(), the source lingered
+    // and the next entry's session-start contended with it (Fig err -12710 /
+    // -17281), leaving the preview black for ~7s until the source finally
+    // released. See performInitialSetup for the matching startCapturing().
     Task {
       try? await RTMPCreator.mixer.attachVideo(nil)
       try? await RTMPCreator.mixer.attachAudio(nil)
+      await RTMPCreator.mixer.stopCapturing()
       await MainActor.run {
         RTMPCreator.isVideoAttached = false
         RTMPCreator.isAudioAttached = false
@@ -229,6 +254,35 @@ class RTMPView: UIView {
     }
   }
 
+  /// Polls the RTMP stream's outbound throughput and emits it as the
+  /// onNewBitrateReceived event (~1.5s cadence). iOS-only — Android already
+  /// emits this event via ConnectionChecker.
+  private func startBitrateReporting() {
+    bitrateReportTask?.cancel()
+    bitrateReportTask = Task { [weak self] in
+      while !Task.isCancelled {
+        guard let self = self else { break }
+        let bytesPerSecond = await RTMPCreator.stream.info.currentBytesPerSecond
+        let bitsPerSecond = bytesPerSecond * 8
+        // The encoder's actual configured video bitrate — what the native
+        // adaptive-bitrate strategy has currently settled on.
+        let encoderBitrate = await RTMPCreator.stream.videoSettings.bitRate
+        await MainActor.run {
+          // BitrateReport shape — matches the JS wrapper's typed payload
+          // and the Android serializer (ObjectCaster). `throughput` is the
+          // actual outbound bytes/s from the RTMP socket; `encoderBitrate`
+          // is what HaishinKit's adaptive-bitrate strategy has the H.264
+          // encoder currently set to.
+          self.onNewBitrateReceived?([
+            "throughput": bitsPerSecond,
+            "encoderBitrate": encoderBitrate,
+          ])
+        }
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+      }
+    }
+  }
+
   private func handleConnectionStatus(_ status: RTMPStatus) {
     switch status.code {
     case RTMPConnection.Code.connectSuccess.rawValue:
@@ -253,6 +307,7 @@ class RTMPView: UIView {
     case RTMPStream.Code.publishStart.rawValue:
       onConnectionStarted?(nil)
       changeStreamState(status: "CONNECTED")
+      startBitrateReporting()
 
     default:
       break
@@ -270,13 +325,29 @@ class RTMPView: UIView {
   }
 
   private func performInitialSetup() {
-    let width = videoSettings["width"] as? Int ?? 720
-    let height = videoSettings["height"] as? Int ?? 1280
+    // Defaults match the @objc var videoSettings landscape defaults above.
+    let width = videoSettings["width"] as? Int ?? 1280
+    let height = videoSettings["height"] as? Int ?? 720
     let bitrate = videoSettings["bitrate"] as? Int ?? (3000 * 1000)
+    let maxBitrate = videoSettings["maxBitrate"] as? Int ?? bitrate
     let audioBitrate = videoSettings["audioBitrate"] as? Int ?? (128 * 1000)
     let fps = videoSettings["fps"] as? Int ?? 30
     let preset = selectCapturePreset(for: width, height: height)
     let orientation = videoOrientation
+
+    // Mirror the prop into RTMPCreator's stored videoSettings so any
+    // later read (e.g. RTMPCreator.startPublish re-applying after a
+    // republish lifecycle) sees the value the JS prop configured, not
+    // the hardcoded RTMPCreator default. Without this, RTMPCreator
+    // and the stream's encoder go out of sync on every republish.
+    RTMPCreator.videoSettings = VideoSettingsType(
+      width: width,
+      height: height,
+      bitrate: bitrate,
+      maxBitrate: maxBitrate,
+      audioBitrate: audioBitrate,
+      fps: fps
+    )
 
     Task {
       // Configure audio session and attach audio
@@ -294,6 +365,16 @@ class RTMPView: UIView {
       // Apply capture settings
       await RTMPCreator.mixer.setSessionPreset(preset)
       await RTMPCreator.mixer.setFrameRate(Float64(fps))
+
+      // Explicitly start the capture session. attachVideo does NOT guarantee
+      // the AVCaptureSession is running — when a previous RTMPView's teardown
+      // is still releasing the camera source, the implicit start contends and
+      // the session can take several seconds to come up (black preview).
+      // startCapturing() is idempotent (session.startRunning() guards on
+      // !isRunning), so this is safe on the already-running path too. Paired
+      // with stopCapturing() in cleanup so each view's session lifecycle is
+      // deterministic.
+      await RTMPCreator.mixer.startCapturing()
 
       // Apply video orientation
       switch orientation {
